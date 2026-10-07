@@ -61,14 +61,33 @@
     const PID = entry.id, CURVER = entry.currentVersion;
     log('project=' + PID, 'currentVersion=' + CURVER);
 
-    // ---- authorize cookie ----
-    await fetch(API + '/project/' + PID + '/action/authorize?userId=' + encodeURIComponent(uid),
-      { headers: H, credentials: 'include' });
-    log('cookie OK');
-
-    // ---- download + parse current version ----
-    const zbytes = new Uint8Array(await (await fetch(
-      RES + '/' + PID + '/versions/' + CURVER + '.zip', { credentials: 'include' })).arrayBuffer());
+    // ---- download current version (try direct first; authorize cookie may still be valid) ----
+    let zbytes = null;
+    const zipUrl = RES + '/' + PID + '/versions/' + CURVER + '.zip';
+    try {
+      const r = await fetch(zipUrl, { credentials: 'include' });
+      if (r.ok) zbytes = new Uint8Array(await r.arrayBuffer());
+      else log('direct zip download -> ' + r.status + ', will authorize');
+    } catch (e) { log('direct zip download failed, will authorize'); }
+    if (!zbytes) {
+      // authorize with retries (the endpoint occasionally fails preflight)
+      let authed = false;
+      for (let a = 0; a < 3 && !authed; a++) {
+        try {
+          const ar = await fetch(API + '/project/' + PID + '/action/authorize?userId=' + encodeURIComponent(uid),
+            { headers: H, credentials: 'include' });
+          authed = ar.ok;
+          log('authorize attempt ' + (a + 1) + ' -> ' + ar.status);
+        } catch (e) { log('authorize attempt ' + (a + 1) + ' failed: ' + e.message); }
+        if (!authed) await new Promise(r => setTimeout(r, 2000));
+      }
+      if (!authed) throw new Error('authorize failed after retries');
+      log('cookie OK');
+      const zr = await fetch(zipUrl, { credentials: 'include' });
+      if (!zr.ok) throw new Error('zip download failed: ' + zr.status);
+      zbytes = new Uint8Array(await zr.arrayBuffer());
+    }
+    log('zip bytes=' + zbytes.length);
     const unz = fflate.unzipSync(zbytes);
     const zname = Object.keys(unz)[0];
     const proj = JSON.parse(new TextDecoder().decode(unz[zname]));
