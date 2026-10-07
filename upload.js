@@ -1,18 +1,62 @@
-/* THE TOILET GAME — one-shot cloud upload.
-   Paste into the devtools console on https://editor.gdevelop.io/ (Ctrl+Shift+J).
-   Uploads the built project JSON into your "The Toilet Game" cloud project. */
+/* THE TOILET GAME — one-shot cloud upload (v2: fully self-contained, no eval, no CDN).
+   1. Open https://raw.githubusercontent.com/mccauleyloren56-bot/the-toilet-game/main/upload.js in a new tab.
+   2. Ctrl+A, Ctrl+C to copy the whole thing.
+   3. On editor.gdevelop.io press Ctrl+Shift+J, paste into the console, press Enter.
+   Uploads the built project into your "The Toilet Game" cloud project. */
 (async () => {
   const log = (...a) => console.log('%c[TTG-UPLOAD]', 'font-weight:bold', ...a);
+
+  /* ---- minimal stored-zip builder (single file, no compression) ---- */
+  const CRC_T = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  function crc32(u8) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function makeZip(name, data) {
+    const enc = new TextEncoder();
+    const nb = enc.encode(name);
+    const crc = crc32(data), sz = data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true);
+    lh.setUint16(4, 20, true); lh.setUint16(6, 0, true); lh.setUint16(8, 0, true);
+    lh.setUint16(10, 0, true); lh.setUint16(12, 0, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, sz, true); lh.setUint32(22, sz, true);
+    lh.setUint16(26, nb.length, true); lh.setUint16(28, 0, true);
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true);
+    cd.setUint16(4, 20, true); cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0, true); cd.setUint16(10, 0, true);
+    cd.setUint16(12, 0, true); cd.setUint16(14, 0, true);
+    cd.setUint32(16, crc, true); cd.setUint32(20, sz, true); cd.setUint32(24, sz, true);
+    cd.setUint16(28, nb.length, true); cd.setUint16(30, 0, true); cd.setUint16(32, 0, true);
+    cd.setUint16(34, 0, true); cd.setUint16(36, 0, true); cd.setUint32(38, 0, true);
+    cd.setUint32(42, 0, true);
+    const cdOff = 30 + nb.length + sz;
+    const cdSize = 46 + nb.length;
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(8, 1, true); end.setUint16(10, 1, true);
+    end.setUint32(12, cdSize, true); end.setUint32(16, cdOff, true);
+    const out = new Uint8Array(cdOff + cdSize + 22);
+    out.set(new Uint8Array(lh.buffer), 0);
+    out.set(nb, 30); out.set(data, 30 + nb.length);
+    out.set(new Uint8Array(cd.buffer), cdOff);
+    out.set(nb, cdOff + 46);
+    out.set(new Uint8Array(end.buffer), cdOff + cdSize);
+    return out;
+  }
+
   try {
-    await new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js';
-      s.onload = res; s.onerror = () => rej(new Error('fflate failed to load'));
-      document.head.appendChild(s);
-    });
-    if (!window.fflate || typeof fflate.zipSync !== 'function')
-      throw new Error('fflate missing after load');
-    log('STEP0 OK: fflate loaded');
+    log('STEP0 OK: inline zip builder ready (no external scripts)');
 
     const projText = await (await fetch(
       'https://raw.githubusercontent.com/mccauleyloren56-bot/the-toilet-game/main/the-toilet-game.json'
@@ -82,7 +126,7 @@
     if (!PURL) throw new Error('no presigned URL');
     log('STEP4 OK: presigned URL received');
 
-    const zipBytes = fflate.zipSync({ 'game.json': new TextEncoder().encode(projText) });
+    const zipBytes = makeZip('game.json', new TextEncoder().encode(projText));
     const upRes = await fetch('https://project-resources.gdevelop.io' + PURL, {
       method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: zipBytes
     });
